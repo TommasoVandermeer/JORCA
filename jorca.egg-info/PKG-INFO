@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: jorca
+Version: 0.0.1
+License-File: LICENSE
+Requires-Dist: jax
+Requires-Dist: matplotlib
