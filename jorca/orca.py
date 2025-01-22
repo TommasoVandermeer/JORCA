@@ -144,23 +144,21 @@ def linearProgram2(
         @jit
         def _not_nan_orca_line(val:tuple):
             result, i, lines, max_speed, fail, pref_velocity = val
-            does_not_satisfy_constraint = det(lines[i, 0], lines[i, 1] - result) > 0
+            does_not_satisfy_constraint = det(lines[i, 0], lines[i, 1] - result) > 0.
 
             @jit
             def _go_to_linear_program_1(val:tuple):
                 temp_result, i, lines, max_speed, pref_velocity = val
                 result, fail = linearProgram1(lines, i, max_speed, pref_velocity)
-                result = lax.cond(fail, lambda _: temp_result, lambda _: result, None)
-                return result, fail
+                result, i = lax.cond(fail, lambda _: (temp_result, i-1), lambda _: (result, i), None)
+                return result, fail, i
             
-            result, fail = lax.cond(
+            result, fail, i = lax.cond(
                 does_not_satisfy_constraint,
                 _go_to_linear_program_1,
-                lambda _: (result, False),
+                lambda _: (result, False, i),
                 (result, i, lines, max_speed, pref_velocity))
-            
             i += 1
-
             return result, i, lines, max_speed, fail, pref_velocity
 
         result, i, lines, max_speed, line_fail, pref_velocity = lax.cond(
@@ -168,14 +166,12 @@ def linearProgram2(
             lambda _: (val[0], val[1]+1, val[2], val[3], val[4], val[5]),
             _not_nan_orca_line,
             val)
-        
         return result, i, lines, max_speed, line_fail, pref_velocity
     
     result, line_fail, _, _, _, _ = lax.while_loop(
         lambda x: ((x[1] < len(orca_lines)) & ~(x[4])),
         _orca_line_loop, 
         (result, 0, orca_lines, max_speed, False, pref_velocity))
-
     return result, line_fail
 
 @jit
@@ -200,7 +196,7 @@ def linearProgram3(
 
             @jit
             def _second_fori_body(j:int, val:tuple):
-                result, distance, proj_lines, orca_lines, max_speed = val
+                proj_lines, orca_lines = val
                 determinant = det(orca_lines[i][0], orca_lines[j][0])
                 conditions = jnp.array([
                     (jnp.abs(determinant) <= RVO_EPSILON) & (jnp.dot(orca_lines[i][0], orca_lines[j][0]) > 0),
@@ -218,20 +214,20 @@ def linearProgram3(
                     lambda _: proj_lines,
                     lambda _: proj_lines.at[j].set(jnp.array([(orca_lines[j][0] - orca_lines[i][0]) / jnp.linalg.norm(orca_lines[j][0] - orca_lines[i][0]), point])),
                     None)
-                temp_result, line_fail = linearProgram2(proj_lines, max_speed, jnp.array([-orca_lines[i][0][1], orca_lines[i][0][0]]))
-                result = lax.cond(
-                    line_fail < len(proj_lines), # Failure here is only due to numerical error, it should not happen
-                    lambda _: result,
-                    lambda _: temp_result,
-                    None)
-                distance = det(orca_lines[i][0], orca_lines[i][1] - result)
-                return result, distance, proj_lines, orca_lines, max_speed
+                return proj_lines, orca_lines
             
-            result, distance, _, orca_lines, max_speed = lax.fori_loop(
+            proj_lines, orca_lines = lax.fori_loop(
                 0,
                 i,
                 _second_fori_body,
-                (result, distance, jnp.tile(NAN_ORCA_LINE, (len(orca_lines), 1, 1)), orca_lines, max_speed))
+                (jnp.tile(NAN_ORCA_LINE, (len(orca_lines), 1, 1)), orca_lines))
+            temp_result, line_fail = linearProgram2(proj_lines, max_speed, jnp.array([-orca_lines[i][0][1], orca_lines[i][0][0]]))
+            result = lax.cond(
+                line_fail < len(proj_lines), # Failure here is only due to numerical error, it should not happen, so the result is overwritten.
+                lambda _: result,
+                lambda _: temp_result,
+                None)
+            distance = det(orca_lines[i][0], orca_lines[i][1] - result)
             return result, distance, orca_lines, max_speed
             
         result, distance, _, _ = lax.cond(
@@ -246,7 +242,6 @@ def linearProgram3(
         len(orca_lines), 
         _fori_body, 
         (result, 0., orca_lines, max_speed))
-    
     return result
 
 @jit
@@ -344,6 +339,46 @@ def compute_single_human_orca_line(human_state:jnp.ndarray, other_human_state:jn
     return orca_line
 
 @jit
+def compute_single_human_neighbors(human_state:jnp.ndarray, other_humans_state:jnp.ndarray, parameters:jnp.ndarray, other_humans_parameters:jnp.ndarray) -> jnp.ndarray:
+    """
+    This function computes the neighbors of a single human given a max distance and a max number of neighbors.
+    """
+    neighbor_dist = parameters[3]
+    squared_neighbor_dist = neighbor_dist**2
+    max_neighbors = parameters[4]
+    relative_positions = other_humans_state[:, :2] - human_state[:2]
+    squared_distances = jnp.sum(relative_positions * relative_positions, axis=1)
+    sorted_indices = jnp.argsort(squared_distances)
+    # TODO: Vmap this function
+    @jit
+    def _set_neighbor(idx, sorted_idx, squared_distances, squared_neighbor_dist, max_neighbors, humans_state, humans_parameters):
+        neighbor, neighbor_parameters = lax.cond(
+            (squared_distances[sorted_idx] < squared_neighbor_dist) & (idx < max_neighbors),
+            lambda _: (humans_state[sorted_idx], humans_parameters[sorted_idx]),
+            lambda _: (jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan]), jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan, jnp.nan, jnp.nan])),
+            None)
+        return neighbor, neighbor_parameters
+    neighbors, neighbor_parameters = vmap(_set_neighbor, in_axes=(0, 0, None, None, None, None, None))(
+        jnp.arange(len(sorted_indices)),
+        sorted_indices, 
+        squared_distances, 
+        squared_neighbor_dist, 
+        max_neighbors, 
+        other_humans_state, 
+        other_humans_parameters)
+    # neighbors, neighbor_parameters = lax.fori_loop(
+    #     0,
+    #     len(sorted_indices),
+    #     lambda i, val: lax.cond(
+    #         (squared_distances[sorted_indices[i]] < squared_neighbor_dist) & (i < max_neighbors),
+    #         lambda _: (val[0].at[i].set(other_humans_state[sorted_indices[i]]), val[1].at[i].set(other_humans_parameters[sorted_indices[i]])),
+    #         lambda _: (val[0].at[i].set(jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan])), val[1].at[i].set(jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan, jnp.nan, jnp.nan]))),
+    #         None),
+    #     (jnp.zeros((len(other_humans_state), 4)), jnp.zeros((len(other_humans_state), 6)))
+    # )
+    return neighbors, neighbor_parameters
+
+@jit
 def single_update(idx:int, humans_state:jnp.ndarray, human_goal:jnp.ndarray, parameters:jnp.ndarray, obstacles:jnp.ndarray, dt:float) -> jnp.ndarray:
     """
     This functions makes a step in time (of length dt) for a single human using the Optimal Reciprocal Collision Avoidance (ORCA) with 
@@ -360,12 +395,14 @@ def single_update(idx:int, humans_state:jnp.ndarray, human_goal:jnp.ndarray, par
     output:
     - updated_human_state: shape is (4,) in the form (px, py, vx, vy)
     """
+    ### Compute neighbors
+    neighbors, neighbors_parameters = compute_single_human_neighbors(humans_state[idx], del_idx_from_arr(humans_state, idx), parameters[idx], del_idx_from_arr(parameters, idx))
     ### Compute ORCA lines for Humans
     orca_lines = vmap(compute_single_human_orca_line, in_axes=(None, 0, None, 0, None))(
         humans_state[idx], 
-        del_idx_from_arr(humans_state, idx),
+        neighbors, # del_idx_from_arr(humans_state, idx), 
         parameters[idx], 
-        del_idx_from_arr(parameters, idx),
+        neighbors_parameters, # del_idx_from_arr(parameters, idx), 
         dt)
     ### Compute ORCA lines for Obstacles
     # TODO: Implement static obstacles avoidance in ORCA

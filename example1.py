@@ -11,11 +11,12 @@ from jorca.utils import *
 
 # Hyperparameters
 n_humans = 5
-circle_radius = 7
+circle_radius = 10
 dt = 0.01
 end_time = 15
 sample_plot_time = 3
 frame_dt = 0.1
+save_gif = False
 
 # Initial conditions
 humans_state = np.zeros((n_humans, 4))
@@ -77,5 +78,5 @@ animate_trajectory(
     all_states, 
     humans_parameters[:,0], 
     dt=frame_dt, 
-    save=False,
+    save=save_gif,
     save_dir=os.path.join(os.path.dirname(__file__),".images","example1.gif"))
