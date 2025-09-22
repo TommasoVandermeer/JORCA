@@ -10,10 +10,11 @@ from jorca.orca import step
 from jorca.utils import *
 
 # Hyperparameters
-n_humans = 5
-circle_radius = 10
-dt = 0.01
-end_time = 15
+n_humans = 20
+humans_safety = 0.05 # meters
+circle_radius = 7
+dt = 0.02
+end_time = 25
 sample_plot_time = 3
 frame_dt = 0.1
 save_gif = False
@@ -33,6 +34,7 @@ for i in range(n_humans):
     humans_goal[i,1] = -humans_state[i,1]
 humans_state = jnp.array(humans_state)
 humans_parameters = get_standard_humans_parameters(n_humans)
+humans_parameters = humans_parameters.at[:,-1].set(humans_safety) # add safety space to the radius
 humans_goal = jnp.array(humans_goal)
 # Obstacles
 static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles

@@ -14,7 +14,7 @@ from matplotlib import use
 def get_standard_humans_parameters(n_humans:int) -> jnp.ndarray:
     """
     Returns the standard parameters of the ORCA for the humans in the simulation. Parameters are the same for all humans in the form:
-    (radius, time_horizon, v_max, neighbor_dist, max_neighbors safety_space).
+    (radius, time_horizon, v_max, neighbor_dist, max_neighbor, safety_space).
 
     args:
     - n_humans: int - Number of humans in the simulation.
