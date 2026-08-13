@@ -21,6 +21,7 @@ save_gif = False
 
 # Initial conditions
 humans_state = np.zeros((n_humans, 4))
+humans_visibility = jnp.fill_diagonal(jnp.ones((n_humans,n_humans), dtype=jnp.bool), jnp.zeros((n_humans,), dtype=jnp.bool), inplace=False)
 humans_goal = np.zeros((n_humans, 2))
 angle_width = (2 * jnp.pi) / (n_humans)
 for i in range(n_humans):
@@ -40,7 +41,7 @@ humans_goal = jnp.array(humans_goal)
 static_obstacles = jnp.array([[[[1000.,1000.],[1000.,1000.]]]]) # dummy obstacles
 
 # Dummy step - Warm-up (we first compile the JIT functions to avoid counting compilation time later)
-_ = step(humans_state, humans_goal, humans_parameters, static_obstacles, dt)
+_ = step(humans_state, humans_visibility, humans_goal, humans_parameters, static_obstacles, dt)
 
 # Simulation 
 steps = int(end_time/dt)
@@ -50,7 +51,7 @@ start_time = time.time()
 all_states = np.empty((steps+1, n_humans, 4), np.float32)
 all_states[0] = humans_state
 for i in range(steps):
-    humans_state = step(humans_state, humans_goal, humans_parameters, static_obstacles, dt)
+    humans_state = step(humans_state, humans_visibility, humans_goal, humans_parameters, static_obstacles, dt)
     all_states[i+1] = humans_state
 end_time = time.time()
 print("Simulation done! Computation time: ", end_time - start_time)

@@ -29,6 +29,17 @@ def del_idx_from_arr(arr:jnp.ndarray, idx:int) -> jnp.ndarray:
             arr[1:])
 
 @jit
+def remove_element(arr:jnp.ndarray, idx:int) -> jnp.ndarray:
+    """
+    Rimuove a single element from a 1D array
+    """
+    N = arr.shape[0]
+    idx_norm = idx % N 
+    out_indices = jnp.arange(N - 1)
+    gather_indices = jnp.where(out_indices < idx_norm, out_indices, out_indices + 1)
+    return arr[gather_indices]
+
+@jit
 def linearProgram1(
     orca_lines:jnp.ndarray,
     idx:int,
@@ -339,9 +350,9 @@ def compute_single_human_orca_line(human_state:jnp.ndarray, other_human_state:jn
     return orca_line
 
 @jit
-def compute_single_human_neighbors(human_state:jnp.ndarray, other_humans_state:jnp.ndarray, parameters:jnp.ndarray, other_humans_parameters:jnp.ndarray) -> jnp.ndarray:
+def compute_single_human_neighbors(human_state:jnp.ndarray, other_humans_visibility:jnp.ndarray, other_humans_state:jnp.ndarray, parameters:jnp.ndarray, other_humans_parameters:jnp.ndarray) -> jnp.ndarray:
     """
-    This function computes the neighbors of a single human given a max distance and a max number of neighbors.
+    This function computes the neighbors of a single human given a max distance, a max number of neighbors, and the visibility vector.
     """
     neighbor_dist = parameters[3]
     squared_neighbor_dist = neighbor_dist**2
@@ -353,7 +364,7 @@ def compute_single_human_neighbors(human_state:jnp.ndarray, other_humans_state:j
     @jit
     def _set_neighbor(idx, sorted_idx, squared_distances, squared_neighbor_dist, max_neighbors, humans_state, humans_parameters):
         neighbor, neighbor_parameters = lax.cond(
-            (squared_distances[sorted_idx] < squared_neighbor_dist) & (idx < max_neighbors),
+            (squared_distances[sorted_idx] < squared_neighbor_dist) & (idx < max_neighbors) & (other_humans_visibility[sorted_idx]),
             lambda _: (humans_state[sorted_idx], humans_parameters[sorted_idx]),
             lambda _: (jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan]), jnp.array([jnp.nan, jnp.nan, jnp.nan, jnp.nan, jnp.nan, jnp.nan])),
             None)
@@ -379,7 +390,7 @@ def compute_single_human_neighbors(human_state:jnp.ndarray, other_humans_state:j
     return neighbors, neighbor_parameters
 
 @jit
-def single_update(idx:int, humans_state:jnp.ndarray, human_goal:jnp.ndarray, parameters:jnp.ndarray, obstacles:jnp.ndarray, dt:float) -> jnp.ndarray:
+def single_update(idx:int, humans_state:jnp.ndarray, humans_visibility:jnp.ndarray, human_goal:jnp.ndarray, parameters:jnp.ndarray, obstacles:jnp.ndarray, dt:float) -> jnp.ndarray:
     """
     This functions makes a step in time (of length dt) for a single human using the Optimal Reciprocal Collision Avoidance (ORCA) with 
     global force guidance for torque and sliding component on the repulsive forces.
@@ -387,6 +398,7 @@ def single_update(idx:int, humans_state:jnp.ndarray, human_goal:jnp.ndarray, par
     args:
     - idx: human index in the state, goal and parameter vectors
     - humans_state: shape is (n_humans, 4) in the form is (px, py, vx, vy)
+    - humans_visibility: shape is (n_humans) indicating if human i can be seen (thus repulsed)
     - humans_goal: shape is (2,) in the form (gx, gy)
     - parameters: shape is (n_humans, ..) in the form (radius, time_horizon, v_max, ..., safety_space)
     - obstacles: shape is (n_obstacles, n_edges, 2, 2) where each obs contains one of its edges (min. 3 edges) and each edge includes its two vertices (p1, p2) composed by two coordinates (x, y)
@@ -396,7 +408,13 @@ def single_update(idx:int, humans_state:jnp.ndarray, human_goal:jnp.ndarray, par
     - updated_human_state: shape is (4,) in the form (px, py, vx, vy)
     """
     ### Compute neighbors
-    neighbors, neighbors_parameters = compute_single_human_neighbors(humans_state[idx], del_idx_from_arr(humans_state, idx), parameters[idx], del_idx_from_arr(parameters, idx))
+    neighbors, neighbors_parameters = compute_single_human_neighbors(
+        humans_state[idx], 
+        remove_element(humans_visibility, idx), 
+        del_idx_from_arr(humans_state, idx), 
+        parameters[idx], 
+        del_idx_from_arr(parameters, idx)
+    )
     ### Compute ORCA lines for Humans
     orca_lines = vmap(compute_single_human_orca_line, in_axes=(None, 0, None, 0, None))(
         humans_state[idx], 
@@ -428,13 +446,14 @@ def single_update(idx:int, humans_state:jnp.ndarray, human_goal:jnp.ndarray, par
     return updated_human_state
 
 @jit
-def step(humans_state:jnp.ndarray, humans_goal:jnp.ndarray, parameters:jnp.ndarray, obstacles:jnp.ndarray, dt:float) -> jnp.ndarray:
+def step(humans_state:jnp.ndarray, humans_visibility:jnp.ndarray, humans_goal:jnp.ndarray, parameters:jnp.ndarray, obstacles:jnp.ndarray, dt:float) -> jnp.ndarray:
     """
     This functions makes a step in time (of length dt) for the humans' state using the Optimal Reciprocal Collision Avoidance (ORCA) with 
     global force guidance for torque and sliding component on the repulsive forces.
 
     args:
     - humans_state: shape is (n_humans, 4) where each row is (px, py, vx, vy)
+    - humans_visibility: shape is (n_humans, n_humans) where each element (i,j) is a bool indicating if human i can see (and thus repulse) human j
     - humans_goal: shape is (n_humans, 2) where each row is (gx, gy)
     - parameters: shape is (n_humans, ..) where each row is (radius, time_horizon, v_max, ..., safety_space)
     - obstacles: shape is (n_obstacles, n_edges, 2, 2) where each obs contains one of its edges (min. 3 edges) and each edge includes its two vertices (p1, p2) composed by two coordinates (x, y)
@@ -443,9 +462,10 @@ def step(humans_state:jnp.ndarray, humans_goal:jnp.ndarray, parameters:jnp.ndarr
     output:
     - updated_humans_state: shape is (n_humans, 4) where each row is (px, py, vx, vy)
     """
-    updated_humans_state = vmap(single_update, in_axes=(0, None, 0, None, None, None))(
+    updated_humans_state = vmap(single_update, in_axes=(0, None, 0, 0, None, None, None))(
         jnp.arange(len(humans_state)),
-        humans_state, 
+        humans_state,
+        humans_visibility,
         humans_goal, 
         parameters, 
         obstacles, 
